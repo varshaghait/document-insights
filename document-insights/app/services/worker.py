@@ -1,21 +1,29 @@
 import asyncio
 import random
-from app.database import db
+from bson import ObjectId
+from app.database import db, redis
 from app.services.redis_service import decrement_user_jobs, cache_summary
 
 collection = db["documents"]
 
 async def worker():
     while True:
-        doc = await collection.find_one({"status": "queued"})
-        if not doc:
-            await asyncio.sleep(2)
+        job = await redis.brpop("doc_queue", timeout=5)
+
+        if not job:
+            await asyncio.sleep(1)
             continue
 
-        await collection.update_one(
-            {"_id": doc["_id"]},
-            {"$set": {"status": "processing"}}
+        doc_id = job[1]
+
+        doc = await collection.find_one_and_update(
+            {"_id": ObjectId(doc_id), "status": "queued"},
+            {"$set": {"status": "processing"}},
+            return_document=True
         )
+
+        if not doc:
+            continue
 
         await asyncio.sleep(random.randint(10, 20))
 
@@ -26,6 +34,7 @@ async def worker():
             )
         else:
             summary = f"Summary of: {doc['title']}"
+
             await collection.update_one(
                 {"_id": doc["_id"]},
                 {"$set": {"status": "completed", "summary": summary}}
